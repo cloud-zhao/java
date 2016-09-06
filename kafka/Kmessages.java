@@ -62,8 +62,10 @@ public class Kmessages{
 			}catch(Exception e){}
 			ms.rewind();
 			start+=size;
-			int keysize=ms.getInt(6);
-			int plso=10+max(0,keysize);
+			byte version=ms.get(4);
+			int head_v=4+(version == 1 ? 10 : 2);
+			int keysize=ms.getInt(head_v);
+			int plso=head_v+4+max(0,keysize);
 			int psize=ms.getInt(plso);
 			if(size<0){
 				System.out.println("Offset: "+offset+" Ms: NULL");

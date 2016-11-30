@@ -47,7 +47,7 @@ public class PerlProcess {
 	Scanner scan=new Scanner(process.getInputStream());
 	StringBuilder output=new StringBuilder();
 	while(scan.hasNextLine()){
-		output.append(scan.nextLine());
+		output.append(scan.nextLine()+"\n");
 	}
 	
 	scan.close();

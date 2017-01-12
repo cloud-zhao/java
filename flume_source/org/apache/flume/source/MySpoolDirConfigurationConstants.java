@@ -19,19 +19,19 @@
 package org.apache.flume.source;
 
 
-public class MyTailConfigurationConstants {
+public class MySpoolDirConfigurationConstants {
+
+  /**
+    * set Kafka sink event header
+    */
+  public static final String CONFIG_SET_KAFKA_HEADER = "setKafkaHeader";
+  public static final boolean DEFAULT_SET_KAFKA_HEADER = true;
 
   /**
     * Output queue size
     */
   public static final String CONFIG_QUEUE_SIZE = "queueSize";
-  public static final int DEFAULT_QUEUE_SIZE = 1000;
- 
-  /**
-    *Check file line fromat
-    */
-  public static final String CONFIG_LINE_CHECK = "lineCheck";
-  public static final boolean DEFAULT_LINE_CHECK = false;
+  public static final int DEFAULT_QUEUE_SIZE = 3000;
 
   /**
     * write file point flush timeout 
@@ -40,23 +40,29 @@ public class MyTailConfigurationConstants {
   public static final long DEFAULT_FLUSH_TIME = 1000l;
 
   /**
-    * file is roll type
+    * scan history file timeout
     */
-  public static final String CONFIG_FILE_ROLL = "fileRoll";
-  public static final boolean DEFAULT_FILE_ROLL = false;
+  public static final String CONFIG_HISTORY_TIME = "historyTime";
+  public static final long DEFAULT_HISTORY_TIME = 60000l;
+
+  /**
+    * scan dir time interval
+    */
+  public static final String CONFIG_SCAN_TIME = "scanTime";
+  public static final long DEFAULT_SCAN_TIME = 60000l;
 
   /**
    * Number of lines to read at a time
    */
   public static final String CONFIG_BATCH_SIZE = "batchSize";
-  public static final int DEFAULT_BATCH_SIZE = 20;
+  public static final int DEFAULT_BATCH_SIZE = 1;
 
   /**
    * Amount of time to wait, if the buffer size was not reached, before 
    * to data is pushed downstream: : default 3000 ms
    */
   public static final String CONFIG_BATCH_TIME_OUT = "batchTimeout";
-  public static final long DEFAULT_BATCH_TIME_OUT = 3000l;
+  public static final long DEFAULT_BATCH_TIME_OUT = 1000l;
 
   /**
    * Charset for reading input
@@ -64,21 +70,4 @@ public class MyTailConfigurationConstants {
   public static final String CHARSET = "charset";
   public static final String DEFAULT_CHARSET = "UTF-8";
 
-  /**
-    * File output fromat enable
-    */
-  public static final String CONFIG_FILE_OUT_FROMAT_ENABLE = "fileOutFromatEnable";
-  public static final boolean DEFALUT_FILE_OUT_FROMAT_ENABLE = false;
-
-  /**
-    * File output fromat regex
-    */
-  public static final String CONFIG_FILE_OUT_FROMAT = "fileOutFromat";
-  public static final String DEFAULT_FILE_OUT_FROMAT = "(.*)";
-
-  /**
-    * File output delimit
-    */
-  public static final String CONFIG_FILE_OUT_DELIMIT = "fileOutDelimit";
-  public static final int DEFAULT_FILE_OUT_DELIMIT = 1;
 }

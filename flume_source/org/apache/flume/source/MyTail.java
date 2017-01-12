@@ -32,7 +32,9 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.io.File;
 import java.io.FileReader;
-import java.io.FileInputStream;     
+import java.io.FileWriter;
+import java.io.FileInputStream;
+import java.io.RandomAccessFile;     
 import java.io.FileOutputStream;     
 import java.util.Properties;
 import java.nio.file.FileSystems;
@@ -75,12 +77,16 @@ Configurable {
   private String fileName;
   private String fileNameRegex;
   private String fileDir;
+  private boolean fileRoll;
+  private long flushTimeout;
+  private boolean lineCheck;
   private SourceCounter sourceCounter;
   private ExecutorService executor;
   private Future<?> myTailRunFuture;
   private Future<?> myTailFuture;
   private Future<?> myWatchFuture;
   private String fileOutFromat;
+  private boolean fileOutFromatEnable;
   private String fileOutDelimit;
   private Integer bufferCount;
   private long batchTimeout;
@@ -94,7 +100,7 @@ Configurable {
 
   @Override
   public void start() {
-    logger.info("Exec source starting with");
+    logger.info("MyTail source starting with");
 
     mySystemOutPrint = new ArrayBlockingQueue<String>(queueSize);
     myPath = new Mypath(fileDir,fileName);
@@ -102,7 +108,7 @@ Configurable {
     executor = Executors.newFixedThreadPool(6);
 
     myTailRun = new MyTailRunnable(getChannelProcessor(),sourceCounter,bufferCount,batchTimeout,charset,mySystemOutPrint);
-    myTail = new Mytail(myPath,fileOutFromat,fileOutDelimit,mySystemOutPrint,executor);
+    myTail = new Mytail(myPath,lineCheck,fileRoll,flushTimeout,fileOutFromat,fileOutDelimit,fileOutFromatEnable,mySystemOutPrint,executor);
     myWatch = new Mywatch(myPath,fileNameRegex);
 
     // FIXME: Use a callback-like executor / future to signal us upon failure.
@@ -119,7 +125,7 @@ Configurable {
     sourceCounter.start();
     super.start();
 
-    logger.debug("Exec source started");
+    logger.debug("MyTail source started");
   }
 
   @Override
@@ -189,6 +195,15 @@ Configurable {
     Preconditions.checkState(fileDir != null,
         "The parameter fileDir must be specified");
 
+    lineCheck = context.getBoolean(MyTailConfigurationConstants.CONFIG_LINE_CHECK,
+        MyTailConfigurationConstants.DEFAULT_LINE_CHECK);
+
+    fileRoll = context.getBoolean(MyTailConfigurationConstants.CONFIG_FILE_ROLL,
+        MyTailConfigurationConstants.DEFAULT_FILE_ROLL);
+
+    flushTimeout = context.getLong(MyTailConfigurationConstants.CONFIG_FLUSH_TIME,
+        MyTailConfigurationConstants.DEFAULT_FLUSH_TIME);
+
     bufferCount = context.getInteger(MyTailConfigurationConstants.CONFIG_BATCH_SIZE,
         MyTailConfigurationConstants.DEFAULT_BATCH_SIZE);
 
@@ -200,6 +215,9 @@ Configurable {
 
     fileOutFromat = context.getString(MyTailConfigurationConstants.CONFIG_FILE_OUT_FROMAT,
         MyTailConfigurationConstants.DEFAULT_FILE_OUT_FROMAT);
+
+    fileOutFromatEnable = context.getBoolean(MyTailConfigurationConstants.CONFIG_FILE_OUT_FROMAT_ENABLE,
+        MyTailConfigurationConstants.DEFALUT_FILE_OUT_FROMAT_ENABLE);
 
     fileOutDelimit = context.getString(MyTailConfigurationConstants.CONFIG_FILE_OUT_DELIMIT,
         String.valueOf((char)MyTailConfigurationConstants.DEFAULT_FILE_OUT_DELIMIT));
@@ -334,69 +352,199 @@ Configurable {
     private Mypath mp=null;
     private String FILE_OUT_FROMAT=null;
     private String FILE_OUT_DELIMIT=null;
+    private boolean fofe;
     private ArrayBlockingQueue<String> outq=null;
     private ExecutorService exec=null;
+    private long flushTimeout;
     private boolean quit=false;
+    private boolean fileRoll;
+    private boolean lineCheck;
+    private String checkPointFileName=null;
+    private RandomAccessFile reader = null;
+    ScheduledExecutorService timedFlushService;
+    ScheduledFuture<?> future;
 
-    public Mytail(Mypath mp,String fof,String fod,ArrayBlockingQueue<String> out,ExecutorService e){
+    public Mytail(Mypath mp,boolean lc,boolean fr,long ft,String fof,String fod,boolean fofe,ArrayBlockingQueue<String> out,ExecutorService e){
         this.mp=mp;
+        this.lineCheck=lc;
+        this.fileRoll=fr;
+        this.flushTimeout=ft;
         this.FILE_OUT_FROMAT=fof;
         this.FILE_OUT_DELIMIT=fod;
+        this.fofe=fofe;
         this.outq=out;
         this.exec=e;
+        this.checkPointFileName=mp.get_dir()+"/"+".check_point_file";
+    }
+
+    private void checkPoint(){
+      File checkPointFile = new File(checkPointFileName);
+      BufferedReader creader = null;
+      if(checkPointFile.canRead()){
+        try{
+          creader = new BufferedReader(new FileReader(checkPointFile));
+          String line = creader.readLine();
+          if(line != null){
+            String[] file_info=line.split("\\|");
+            if(!fileRoll){
+              if((System.currentTimeMillis()/1000 - Integer.parseInt(file_info[2])) < (24*3600)){
+                try{ 
+                  reader = new RandomAccessFile(mp.get_dir()+"/"+file_info[0],"r");
+                  reader.seek(Long.parseLong(file_info[1]));
+                }catch(IOException e){
+                  logger.error("checkPoint new RandomAccessFile error ",e);
+                  Mytools.MyReaderClose(reader);
+                  reader = null;
+                }
+              }
+            }else{
+              mp.set_file(file_info[0]);
+              try{
+                reader = new RandomAccessFile(mp.get_dir()+"/"+file_info[0],"r");
+                reader.seek(Long.parseLong(file_info[1]));
+              }catch(IOException e2){
+                logger.error("checkPoint new RandomAccessFile error",e2);
+                Mytools.MyReaderClose(reader);
+                reader = null;
+              }
+            }
+          }
+        }catch(IOException e1){
+          logger.debug("checkPointFileName not reader line",e1);
+        }finally{
+          Mytools.MyReaderClose(creader);
+        }
+      }
+    }
+
+    private void flushCheckPoint(){
+      String point = null;
+      try{
+        point = Long.toString(reader.getFilePointer());
+      }catch(IOException e){
+        logger.error("get file pointer Exception ",e);
+        point = Long.toString(0l); 
+      }
+      String timeStamp =  Integer.toString((int)(System.currentTimeMillis()/1000));
+      Mytools.writeSingle(checkPointFileName,mp.get_file()+"|"+point+"|"+timeStamp+"\n",false);
     }
 
     public int kill(){
       this.quit=true;
+
+      if (future != null) {
+        future.cancel(true);
+      }
+
+      if (timedFlushService != null) {
+        timedFlushService.shutdown();
+        while (!timedFlushService.isTerminated()) {
+          try {
+            timedFlushService.awaitTermination(500, TimeUnit.MILLISECONDS);
+          }catch(InterruptedException e) {
+            logger.debug("Interrupted while waiting for exec executor service "
+              + "to stop. Just exiting.");
+            Thread.currentThread().interrupt();
+          }
+        }
+      }
+
       return 0;
     }
   
     public void run(){
       logger.info("Start Mytail.....");
+      logger.error("start read file...");
+
+      checkPoint();
+
+      /*
+      timedFlushService = Executors.newScheduledThreadPool(2,
+              new ThreadFactoryBuilder().setNameFormat(
+              "timedFlushExecService" +
+              Thread.currentThread().getId() + "-%d").build());
+      */
+
+      timedFlushService = Executors.newSingleThreadScheduledExecutor(
+              new ThreadFactoryBuilder().setNameFormat(
+              "timedFlushCheckPointExecService" +
+              Thread.currentThread().getId() + "-%d").build());
+
+      future = timedFlushService.scheduleWithFixedDelay(new Runnable(){
+        public void run(){
+          try{
+            flushCheckPoint();
+          }catch(Exception e){
+            logger.error("Exception flushCheckPoint ", e);
+            if(e instanceof InterruptedException) {
+              Thread.currentThread().interrupt();
+            }
+          }
+        }
+      },
+      flushTimeout,flushTimeout,TimeUnit.MILLISECONDS);
    
       File file=new File(mp.get_absfile());
       String dir=mp.get_dir();
-      BufferedReader reader=null;
+      if(reader == null){
+        try{
+          reader = new RandomAccessFile(file,"r");
+        }catch(IOException e){
+          logger.error("reader create failed ",e);
+          System.exit(1);
+        }
+      }
 
       logger.info("start readline file loop");
       try{
-        for(;true;){
-          reader=new BufferedReader(new FileReader(file));
+        outLoop: for(;true;){
           String line=null;
           while(true){
             line=reader.readLine();
             if(line != null){
               try{
-                outq.put(Mytools.fromatOut(FILE_OUT_FROMAT,FILE_OUT_DELIMIT,line));
+                if(lineCheck){
+                  if(line.indexOf(String.valueOf((char)1)) != -1){
+                    outq.put(Mytools.fromatOut(FILE_OUT_FROMAT,FILE_OUT_DELIMIT,line,fofe));
+                  }
+                }else{
+                  outq.put(Mytools.fromatOut(FILE_OUT_FROMAT,FILE_OUT_DELIMIT,line,fofe));
+                }
+                //outq.put(line);
               }catch(InterruptedException e){
                 logger.error("file line "+file,e);
               }
             }else{
+              logger.error("read file ok");
               if(quit)
-                break;
-              String abs_file=file.getAbsolutePath();
-              String mp_file=mp.get_absfile();
+                break outLoop;
+              String mp_file=mp.get_newfile();
               String history_file=null;
               while((history_file=mp.get_history()) != null){
                 logger.debug("init histroy log thread "+dir+"/"+history_file);
-                exec.execute(new Myreadline(dir+"/"+history_file,FILE_OUT_FROMAT,FILE_OUT_DELIMIT,outq));
+                exec.execute(new Myreadline(dir+"/"+history_file,FILE_OUT_FROMAT,FILE_OUT_DELIMIT,fofe,outq));
               }
-              if((! abs_file.equals(mp_file)) || mp.get_flag().equals("MV")){
-                if(mp.get_flag().equals("MV"))
-                  mp.set_flag("");
-                  logger.debug("read new log file");
-                  file=new File(mp_file);
-                  logger.debug("Abs: "+abs_file+" mp_file: "+mp_file);
-                  Mytools.MyReaderClose(reader);
-                  break;
+              if(mp_file != null){
+                if(mp_file.equals("MV")){
+                  mp_file=file.getAbsolutePath();
+                }else{
+                  mp.set_file(mp_file);
                 }
-              logger.debug("sleep 1000");
-              Mytools.MySleep(1000);
+                logger.debug("read new log file");
+                file=new File(mp.get_absfile());
+                logger.debug("mp_file: "+mp_file);
+                Mytools.MyReaderClose(reader);
+                break;
+              }else{
+                logger.debug("sleep 1000");
+                Mytools.MySleep(1000);
+              }
             }
           }
+          reader=new RandomAccessFile(file,"r");
         }
       }catch(IOException e){
-        e.printStackTrace();
+        logger.debug("Mytail readline ",e);
       }finally{
         Mytools.MyReaderClose(reader);
       }
@@ -404,7 +552,7 @@ Configurable {
   }
 
   private static class Mytools{
-    public static void MySleep(int ms){
+    protected static void MySleep(int ms){
       try{
         Thread.currentThread().sleep(ms);
       }catch(InterruptedException e){
@@ -412,7 +560,7 @@ Configurable {
       }
     }
 
-    public static String join(String flag,List<String> list){
+    protected static String join(String flag,List<String> list){
       boolean f=false;
       String str="";
       for(String s : list){
@@ -425,7 +573,21 @@ Configurable {
       return str;
     }
 
-    public static String fromatOut(String regex,String flag,String input){
+    protected static void writeSingle(String f,String line,boolean append){
+      try{
+        FileWriter fw = new FileWriter(f,append);
+        fw.write(line);
+        fw.flush();
+        fw.close();
+      }catch(IOException e){
+        logger.error("file "+f+" writer failed",e);
+      }
+    }
+
+    protected static String fromatOut(String regex,String flag,String input,boolean fofe){
+      if(!fofe){
+        return input;
+      }
       Pattern p=Pattern.compile(regex);
       Matcher m=p.matcher(input);
       String output=null;
@@ -439,10 +601,14 @@ Configurable {
       return output;
     }
 
-    public static void MyReaderClose(BufferedReader re){
+    protected static void MyReaderClose(Object re){
       if(re != null){
         try{
-          re.close();
+          if(re instanceof RandomAccessFile){
+            ((RandomAccessFile)re).close();
+          }else if(re instanceof BufferedReader){
+            ((BufferedReader)re).close();
+          }
         }catch(IOException e1){
           logger.debug("BufferedReader close IOException ",e1);
         }
@@ -491,16 +657,17 @@ Configurable {
 				  WatchKey wkey=ws.take();
 				  for(WatchEvent<?> event : wkey.pollEvents()){
 					 if(event.kind()==StandardWatchEventKinds.ENTRY_CREATE){
-						  String file_name=event.context().toString();
+              //Path path=(Path)wkey.watchable();
+						  String file=event.context().toString();
 
-						  logger.debug("Event File: "+file_name);
+						  logger.debug("Event File: "+file);
 
-						  if(file_name.equals(mypath.get_file()))
-							 mypath.set_flag("MV");
-						  else if(checkFileName("^"+regex+"$",file_name))
-							 mypath.set_file(file_name);
-						  else if(checkFileName("^history_"+regex+"$",file_name))
-							 mypath.set_history(file_name);
+						  if(file.equals(mypath.get_file())){
+							 mypath.set_newfile("MV");
+              }else if(checkFileName("^"+regex+"$",file))
+							 mypath.set_newfile(file);
+						  else if(checkFileName("^history_"+regex+"$",file))
+							 mypath.set_history(file);
 					 }else{
               if(quit)
                 return;
@@ -522,11 +689,13 @@ Configurable {
     private String file_name=null;
     private String fof;
     private String fod;
+    private boolean fofe;
     private ArrayBlockingQueue<String> outq=null;
 
-    protected Myreadline(String name,String fof,String fod,ArrayBlockingQueue<String> out){
+    protected Myreadline(String name,String fof,String fod,boolean fofe,ArrayBlockingQueue<String> out){
       this.file_name=name;
       this.fof=fof;
+      this.fofe=fofe;
       this.fod=fod;
       this.outq=out;
     }
@@ -539,11 +708,13 @@ Configurable {
         String line=null;
         while((line=reader.readLine()) != null){
           try{
-            outq.put(Mytools.fromatOut(fof,fod,line));
+            //outq.put(Mytools.fromatOut(fof,fod,line,fofe));
+            outq.put(line);
           }catch(InterruptedException e){
             logger.error("Myreadline read file line "+line,e);
           }
         }
+        file.delete();
       }catch(IOException e){
         logger.debug("readline file "+file_name+" IOException ",e);
       }finally{
@@ -556,11 +727,12 @@ Configurable {
 	   private String dir=null;
 	   private String file=null;
 	   private String flag="";
+     private ArrayBlockingQueue<String> newFile=new ArrayBlockingQueue<String>(3);
 	   private ArrayBlockingQueue<String> history=new ArrayBlockingQueue<String>(30);
 
 	   public Mypath(String path,String file){
 	 	   this.dir=path;
-		    this.file=file;
+		   this.file=file;
 	   }
 
 	   public String get_dir(){
@@ -568,23 +740,29 @@ Configurable {
 			 dir.substring(0,dir.length()-1) : 
 			 dir;
 	   }
-	   public String get_absfile(){
-		    return dir.charAt(dir.length()-1) == '/' ?
-			 dir+file : 
-			 dir+"/"+file;
-	   }
-	   public String get_file(){
-		  return file;
-	   }
-	   public void set_file(String file_name){
-		  this.file=file_name;
-	   }
-	   public synchronized void set_flag(String flag){
-		  this.flag=flag;
-	   }
-	   public String get_flag(){
-		  return flag;
-	   }
+     public void set_file(String file){
+      this.file=file;
+     }
+     public String get_file(){
+      return file;
+     }
+     public String get_absfile(){
+      return get_dir()+"/"+file;
+     }
+     public void set_newfile(String f){
+      try{
+        this.newFile.put(f);
+      }catch(InterruptedException e){
+        logger.error("Mypath new file put failed ",e);
+      }
+     }
+     public String get_newfile(){
+      try{
+        return newFile.remove();
+      }catch(NoSuchElementException e){
+        return null;
+      }
+     }
 	   public String get_history(){
 		  try{
 		    return history.remove();

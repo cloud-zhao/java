@@ -40,7 +40,7 @@ public class MyTailConfigurationConstants {
   public static final long DEFAULT_FLUSH_TIME = 1000l;
 
   /**
-    * file is roll type
+    * file is roll type enable
     */
   public static final String CONFIG_FILE_ROLL = "fileRoll";
   public static final boolean DEFAULT_FILE_ROLL = false;

@@ -67,6 +67,10 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 import java.nio.charset.Charset;
 
+import java.util.UUID;
+import java.util.HashMap;
+import java.util.Map;
+
 
 
 public class MyTail extends AbstractSource implements EventDrivenSource,
@@ -256,61 +260,80 @@ Configurable {
 
     @Override
     public void run() {
-        String exitCode = "unknown";
-        String line = null;
-        final List<Event> eventList = new ArrayList<Event>();
+      final List<Event> eventList = new ArrayList<Event>();
+      do{
+          String exitCode = "unknown";
+          String line = null;
 
-        timedFlushService = Executors.newSingleThreadScheduledExecutor(
-                new ThreadFactoryBuilder().setNameFormat(
-                "timedFlushExecService" +
-                Thread.currentThread().getId() + "-%d").build());
-      try{
-        future = timedFlushService.scheduleWithFixedDelay(new Runnable() {
-          @Override
-          public void run() {
-            try {
+          timedFlushService = Executors.newSingleThreadScheduledExecutor(
+                  new ThreadFactoryBuilder().setNameFormat(
+                  "timedFlushExecService" +
+                  Thread.currentThread().getId() + "-%d").build());
+        try{
+          future = timedFlushService.scheduleWithFixedDelay(new Runnable() {
+            @Override
+            public void run() {
+              try {
+                synchronized (eventList) {
+                  if(!eventList.isEmpty() && timeout()) {
+                    flushEventBatch(eventList);
+                  }
+                }
+              } catch (Exception e) {
+                 logger.error("Exception occured when processing event batch", e);
+                 if(e instanceof InterruptedException) {
+                 Thread.currentThread().interrupt();
+                }
+              }
+            }
+          },
+          batchTimeout, batchTimeout, TimeUnit.MILLISECONDS);
+
+          while (! quit) {
+            //line=out.take();
+	    if(eventList.size() < bufferCount){
+            	line=out.poll(batchTimeout,TimeUnit.MILLISECONDS);
+            //logger.error("cloudzhao_YYYYY: "+line);
+            if(line != null){
               synchronized (eventList) {
-                if(!eventList.isEmpty() && timeout()) {
+                sourceCounter.incrementEventReceivedCount();
+                //line=new String(line.getBytes("ISO-8859-1"),charset);
+                //logger.error("cloudzhao_xxxx: "+line);
+                Map<String,String> header=new HashMap<String,String>();
+                header.put("topic",null);
+                header.put("key",getUUID());
+                Event e=EventBuilder.withBody(line.getBytes("ISO-8859-1"),header);
+                eventList.add(e);
+                //eventList.add(EventBuilder.withBody(line.getBytes(charset)));
+                if(eventList.size() >= bufferCount || timeout()) {
                   flushEventBatch(eventList);
                 }
               }
-            } catch (Exception e) {
-               logger.error("Exception occured when processing event batch", e);
-             if(e instanceof InterruptedException) {
-               Thread.currentThread().interrupt();
-              }
+            }
+	   }else{
+			synchronized (eventList){
+                		if(eventList.size() >= bufferCount || timeout()) {
+                  			flushEventBatch(eventList);
+                		}
+			}
+		}
+          }
+
+          synchronized (eventList) {
+            if(!eventList.isEmpty()) {
+              flushEventBatch(eventList);
             }
           }
-        },
-        batchTimeout, batchTimeout, TimeUnit.MILLISECONDS);
-
-        while (! quit) {
-          //line=out.take();
-          line=out.poll(batchTimeout,TimeUnit.MILLISECONDS);
-          if(line != null){
-            synchronized (eventList) {
-              sourceCounter.incrementEventReceivedCount();
-              eventList.add(EventBuilder.withBody(line.getBytes(charset)));
-              if(eventList.size() >= bufferCount || timeout()) {
-                flushEventBatch(eventList);
-              }
-            }
+        } catch (Exception e) {
+          logger.error("MyTailRunnable ",e);
+          if(e instanceof InterruptedException) {
+            //logger.error("MyTailRunnable InterruptedException ",e)
+            Thread.currentThread().interrupt();
           }
+        } finally {
+          exitCode = String.valueOf(_kill());
         }
-
-        synchronized (eventList) {
-          if(!eventList.isEmpty()) {
-            flushEventBatch(eventList);
-          }
-        }
-      } catch (Exception e) {
-        logger.error("MyTailRunnable ",e);
-        if(e instanceof InterruptedException) {
-          Thread.currentThread().interrupt();
-        }
-      } finally {
-        exitCode = String.valueOf(kill());
-      }
+      }while(! quit);
     }
 
     private void flushEventBatch(List<Event> eventList){
@@ -324,9 +347,17 @@ Configurable {
       return (systemClock.currentTimeMillis() - lastPushToChannel) >= batchTimeout;
     }
 
+    private String getUUID(){
+      String str=UUID.randomUUID().toString();
+      return str.replace("-", "");
+    }
+
     public int kill(){
       this.quit=true;
+      return _kill();
+    }
 
+    private int _kill(){
       // Stop the Thread that flushes periodically
       if (future != null) {
         future.cancel(true);
@@ -503,19 +534,20 @@ Configurable {
             line=reader.readLine();
             if(line != null){
               try{
-                if(lineCheck){
+                /*if(lineCheck){
                   if(line.indexOf(String.valueOf((char)1)) != -1){
                     outq.put(Mytools.fromatOut(FILE_OUT_FROMAT,FILE_OUT_DELIMIT,line,fofe));
                   }
                 }else{
                   outq.put(Mytools.fromatOut(FILE_OUT_FROMAT,FILE_OUT_DELIMIT,line,fofe));
-                }
-                //outq.put(line);
+                }*/
+                //logger.error("cloudzhao_ZZZ: "+line);
+                outq.put(line);
               }catch(InterruptedException e){
                 logger.error("file line "+file,e);
               }
             }else{
-              logger.error("read file ok");
+              logger.info("read file ok");
               if(quit)
                 break outLoop;
               String mp_file=mp.get_newfile();
@@ -657,7 +689,7 @@ Configurable {
 				  WatchKey wkey=ws.take();
 				  for(WatchEvent<?> event : wkey.pollEvents()){
 					 if(event.kind()==StandardWatchEventKinds.ENTRY_CREATE){
-              					//Path path=(Path)wkey.watchable();
+              //Path path=(Path)wkey.watchable();
 						  String file=event.context().toString();
 
 						  logger.debug("Event File: "+file);
@@ -702,9 +734,9 @@ Configurable {
 
     public void run(){
       File file=new File(file_name);
-      BufferedReader reader=null;
+      RandomAccessFile reader=null;
       try{
-        reader=new BufferedReader(new FileReader(file));
+        reader=new RandomAccessFile(file,"r");
         String line=null;
         while((line=reader.readLine()) != null){
           try{

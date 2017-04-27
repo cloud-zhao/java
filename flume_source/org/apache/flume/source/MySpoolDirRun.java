@@ -277,9 +277,9 @@ class MySpoolDirReadline implements Runnable{
 
   public void run(){
     File file=new File(file_name);
-    BufferedReader reader=null;
+    RandomAccessFile reader=null;
     try{
-      reader=new BufferedReader(new FileReader(file));
+      reader=new RandomAccessFile(file,"r");
       String line=null;
       while((line=reader.readLine()) != null){
         try{

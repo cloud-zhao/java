@@ -135,6 +135,7 @@ public class MySpoolDirPutEvent implements Runnable,MySpoolDirInterface{
         if(line != null){
           synchronized (eventList) {
             Event e;
+            line=new String(line.getBytes("ISO-8859-1"),charset);
             if(setHeader){
               Map<String,String> header=new HashMap<String,String>();
               header.put("topic",null);

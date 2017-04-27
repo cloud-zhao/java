@@ -71,4 +71,4 @@ import java.nio.charset.Charset;
 
 public interface MySpoolDirInterface{
   public int kill();
-}
+} 

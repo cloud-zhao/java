@@ -82,3 +82,4 @@ public class MyTailConfigurationConstants {
   public static final String CONFIG_FILE_OUT_DELIMIT = "fileOutDelimit";
   public static final int DEFAULT_FILE_OUT_DELIMIT = 1;
 }
+ 
